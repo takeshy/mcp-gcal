@@ -229,7 +229,33 @@ func (cs *CalendarService) CreateEvent(calendarID, summary, description, locatio
 		Location:    location,
 	}
 
-	if len(start) == 10 {
+	startIsDate := isDateOnly(start)
+	endIsDate := isDateOnly(end)
+
+	// Google Calendar API requires start and end to both be date or both be dateTime.
+	// If they're mixed, convert the date to dateTime (start of day in the given timezone).
+	if startIsDate != endIsDate {
+		tz := timezone
+		if tz == "" {
+			tz = "UTC"
+		}
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			loc = time.UTC
+		}
+		if startIsDate {
+			t, _ := time.ParseInLocation("2006-01-02", start, loc)
+			start = t.Format(time.RFC3339)
+			startIsDate = false
+		}
+		if endIsDate {
+			t, _ := time.ParseInLocation("2006-01-02", end, loc)
+			end = t.Format(time.RFC3339)
+			endIsDate = false
+		}
+	}
+
+	if startIsDate {
 		event.Start = &calendar.EventDateTime{Date: start}
 	} else {
 		event.Start = &calendar.EventDateTime{DateTime: start}
@@ -238,7 +264,7 @@ func (cs *CalendarService) CreateEvent(calendarID, summary, description, locatio
 		event.Start.TimeZone = timezone
 	}
 
-	if len(end) == 10 {
+	if endIsDate {
 		event.End = &calendar.EventDateTime{Date: end}
 	} else {
 		event.End = &calendar.EventDateTime{DateTime: end}
@@ -285,7 +311,7 @@ func (cs *CalendarService) UpdateEvent(calendarID, eventID string, updates map[s
 		existing.Location = v
 	}
 	if v, ok := updates["start"]; ok {
-		if len(v) == 10 {
+		if isDateOnly(v) {
 			existing.Start = &calendar.EventDateTime{Date: v}
 		} else {
 			start := &calendar.EventDateTime{DateTime: v}
@@ -296,7 +322,7 @@ func (cs *CalendarService) UpdateEvent(calendarID, eventID string, updates map[s
 		}
 	}
 	if v, ok := updates["end"]; ok {
-		if len(v) == 10 {
+		if isDateOnly(v) {
 			existing.End = &calendar.EventDateTime{Date: v}
 		} else {
 			end := &calendar.EventDateTime{DateTime: v}
@@ -304,6 +330,33 @@ func (cs *CalendarService) UpdateEvent(calendarID, eventID string, updates map[s
 				end.TimeZone = existing.End.TimeZone
 			}
 			existing.End = end
+		}
+	}
+
+	// Ensure start and end are both date or both dateTime
+	startIsDate := existing.Start != nil && existing.Start.Date != ""
+	endIsDate := existing.End != nil && existing.End.Date != ""
+	if existing.Start != nil && existing.End != nil && startIsDate != endIsDate {
+		tz := ""
+		if existing.Start != nil {
+			tz = existing.Start.TimeZone
+		}
+		if tz == "" && existing.End != nil {
+			tz = existing.End.TimeZone
+		}
+		loc := time.UTC
+		if tz != "" {
+			if l, err := time.LoadLocation(tz); err == nil {
+				loc = l
+			}
+		}
+		if startIsDate {
+			t, _ := time.ParseInLocation("2006-01-02", existing.Start.Date, loc)
+			existing.Start = &calendar.EventDateTime{DateTime: t.Format(time.RFC3339), TimeZone: tz}
+		}
+		if endIsDate {
+			t, _ := time.ParseInLocation("2006-01-02", existing.End.Date, loc)
+			existing.End = &calendar.EventDateTime{DateTime: t.Format(time.RFC3339), TimeZone: tz}
 		}
 	}
 	if v, ok := updates["attendees"]; ok {
@@ -367,4 +420,9 @@ func (cs *CalendarService) RespondToEvent(calendarID, eventID, response string) 
 	}
 	ev := convertEvent(updated)
 	return &ev, nil
+}
+
+// isDateOnly returns true if s looks like a date-only string (YYYY-MM-DD).
+func isDateOnly(s string) bool {
+	return len(s) == 10 && s[4] == '-' && s[7] == '-'
 }

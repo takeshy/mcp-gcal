@@ -78,8 +78,10 @@ body {
   border-right: 1px solid #e8e8e8;
   border-bottom: 1px solid #e8e8e8;
   padding: 4px;
-  cursor: default;
+  cursor: pointer;
 }
+.day-cell:hover { background: #f8f8f8; }
+.day-cell.today:hover { background: #dbe8fc; }
 .day-cell:nth-child(7n) { border-right: none; }
 .day-cell.other-month { background: #fafafa; }
 .day-cell.today { background: #e8f0fe; }
@@ -163,7 +165,9 @@ body {
 .hour-line {
   height: 48px;
   border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
 }
+.hour-line:hover { background: #f0f7ff; }
 .week-event {
   position: absolute;
   left: 2px;
@@ -289,15 +293,16 @@ body {
   color: #555;
   margin-bottom: 4px;
 }
-.form-group input, .form-group textarea {
+.form-group input, .form-group textarea, .form-group select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid #ddd;
   border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
+  background: white;
 }
-.form-group input:focus, .form-group textarea:focus {
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus {
   outline: none;
   border-color: #1a73e8;
   box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
@@ -404,7 +409,7 @@ body {
         </div>
         <div class="form-group">
           <label for="form-start-time">Start Time</label>
-          <input type="time" id="form-start-time">
+          <select id="form-start-time"></select>
         </div>
       </div>
       <div class="form-row">
@@ -414,7 +419,7 @@ body {
         </div>
         <div class="form-group">
           <label for="form-end-time">End Time</label>
-          <input type="time" id="form-end-time">
+          <select id="form-end-time"></select>
         </div>
       </div>
       <div class="form-group">
@@ -589,7 +594,8 @@ function renderMonth() {
     if (isOther) classes += ' other-month';
     if (isToday) classes += ' today';
 
-    html += `<div class="${classes}">`;
+    const cellDateStr = `${cellDate.getFullYear()}-${String(cellDate.getMonth()+1).padStart(2,'0')}-${String(cellDate.getDate()).padStart(2,'0')}`;
+    html += `<div class="${classes}" data-action="add-on-date" data-date="${cellDateStr}">`;
     html += `<div class="day-number">${cellDate.getDate()}</div>`;
     html += '<div class="day-events">';
 
@@ -651,9 +657,10 @@ function renderWeek() {
 
   // Day columns
   weekDays.forEach(day => {
+    const dayStr = `${day.getFullYear()}-${String(day.getMonth()+1).padStart(2,'0')}-${String(day.getDate()).padStart(2,'0')}`;
     html += '<div class="week-day-column">';
     for (let h = 0; h < 24; h++) {
-      html += '<div class="hour-line"></div>';
+      html += `<div class="hour-line" data-action="add-on-hour" data-date="${dayStr}" data-hour="${h}"></div>`;
     }
 
     // Place events
@@ -764,7 +771,7 @@ async function loadEvents() {
   const range = getViewRange();
   try {
     const result = await mcpClient.callServerTool('gcal-list-events-app', {
-      args: [`--time-min=${range.timeMin}`, `--time-max=${range.timeMax}`]
+      time_min: range.timeMin, time_max: range.timeMax
     });
     if (result?.content?.[0]?.text) {
       events = parseEvents(result.content[0].text);
@@ -795,7 +802,7 @@ async function showEventDetail(eventId) {
   if (mcpClient) {
     try {
       const result = await mcpClient.callServerTool('gcal-get-event-app', {
-        args: [`--event-id=${eventId}`]
+        event_id: eventId
       });
       if (result?.content?.[0]?.text) {
         ev = JSON.parse(result.content[0].text);
@@ -856,18 +863,57 @@ function closeDetail() {
   selectedEventId = null;
 }
 
+// Time dropdown helpers
+function buildTimeOptions(selectEl) {
+  selectEl.innerHTML = '<option value="">All day</option>';
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      const hh = String(h).padStart(2, '0');
+      const mm = String(m).padStart(2, '0');
+      const val = `${hh}:${mm}`;
+      const label = `${hh}:${mm}`;
+      selectEl.innerHTML += `<option value="${val}">${label}</option>`;
+    }
+  }
+}
+
+function setTimeSelect(selectEl, timeStr) {
+  if (!timeStr) { selectEl.value = ''; return; }
+  // Snap to nearest 30-min slot
+  const [h, m] = timeStr.split(':').map(Number);
+  const snapped = m < 15 ? '00' : m < 45 ? '30' : '00';
+  const sh = m >= 45 ? h + 1 : h;
+  const val = `${String(sh % 24).padStart(2, '0')}:${snapped}`;
+  selectEl.value = val;
+}
+
 // Create event
-function showAddPanel() {
+function showAddPanel(dateObj, startHour) {
   const overlay = document.getElementById('add-overlay');
   overlay.classList.add('visible');
   document.getElementById('form-error').style.display = 'none';
-  // Pre-fill dates
-  const today = new Date();
-  const dateStr = today.toISOString().slice(0, 10);
+
+  const d = dateObj || new Date();
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
   document.getElementById('form-start-date').value = dateStr;
   document.getElementById('form-end-date').value = dateStr;
-  document.getElementById('form-start-time').value = '';
-  document.getElementById('form-end-time').value = '';
+
+  const startSel = document.getElementById('form-start-time');
+  const endSel = document.getElementById('form-end-time');
+  buildTimeOptions(startSel);
+  buildTimeOptions(endSel);
+
+  if (startHour != null) {
+    const hh = String(startHour).padStart(2, '0');
+    startSel.value = `${hh}:00`;
+    const eh = Math.min(startHour + 1, 23);
+    endSel.value = `${String(eh).padStart(2, '0')}:00`;
+  } else {
+    startSel.value = '';
+    endSel.value = '';
+  }
+
   document.getElementById('form-summary').value = '';
   document.getElementById('form-location').value = '';
   document.getElementById('form-description').value = '';
@@ -938,11 +984,11 @@ async function createEvent() {
   errEl.style.display = 'none';
 
   try {
-    const args = [`--summary=${summary}`, `--start=${start}`, `--end=${end}`];
-    if (location) args.push(`--location=${location}`);
-    if (description) args.push(`--description=${description}`);
+    const toolArgs = { summary, start, end };
+    if (location) toolArgs.location = location;
+    if (description) toolArgs.description = description;
 
-    const result = await mcpClient.callServerTool('gcal-create-event-app', { args });
+    const result = await mcpClient.callServerTool('gcal-create-event-app', toolArgs);
     if (result?.isError) {
       throw new Error(result.content?.[0]?.text || 'Failed to create event');
     }
@@ -967,7 +1013,7 @@ async function deleteEvent(eventId) {
 
   try {
     const result = await mcpClient.callServerTool('gcal-delete-event-app', {
-      args: [`--event-id=${eventId}`]
+      event_id: eventId
     });
     if (result?.isError) {
       throw new Error(result.content?.[0]?.text || 'Failed to delete event');
@@ -984,9 +1030,30 @@ async function deleteEvent(eventId) {
 
 // Event delegation
 document.getElementById('calendar-grid').addEventListener('click', (e) => {
+  // Show event detail (highest priority)
   const eventEl = e.target.closest('[data-action="show-event"]');
   if (eventEl) {
+    e.stopPropagation();
     showEventDetail(eventEl.dataset.eventId);
+    return;
+  }
+
+  // Week view: click on hour line → add event at that time
+  const hourEl = e.target.closest('[data-action="add-on-hour"]');
+  if (hourEl) {
+    const parts = hourEl.dataset.date.split('-');
+    const d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+    showAddPanel(d, parseInt(hourEl.dataset.hour, 10));
+    return;
+  }
+
+  // Month view: click on day cell → add event on that date
+  const dayEl = e.target.closest('[data-action="add-on-date"]');
+  if (dayEl) {
+    const parts = dayEl.dataset.date.split('-');
+    const d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+    showAddPanel(d);
+    return;
   }
 });
 
@@ -1014,7 +1081,7 @@ document.getElementById('next-btn').addEventListener('click', navigateNext);
 document.getElementById('today-btn').addEventListener('click', goToday);
 document.getElementById('week-btn').addEventListener('click', () => setViewMode('week'));
 document.getElementById('month-btn').addEventListener('click', () => setViewMode('month'));
-document.getElementById('add-btn').addEventListener('click', showAddPanel);
+document.getElementById('add-btn').addEventListener('click', () => showAddPanel());
 
 // Keyboard: Escape to close panels
 document.addEventListener('keydown', (e) => {
