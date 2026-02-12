@@ -124,8 +124,8 @@ func TestMigrateLegacyAPIKeys(t *testing.T) {
 	if err := d.db.QueryRow("SELECT api_key FROM users WHERE email = ?", "legacy@example.com").Scan(&stored); err != nil {
 		t.Fatalf("query migrated api key: %v", err)
 	}
-	if stored != hashAPIKey(legacyKey) {
-		t.Fatalf("stored hash = %q, want %q", stored, hashAPIKey(legacyKey))
+	if stored != hashToken(legacyKey) {
+		t.Fatalf("stored hash = %q, want %q", stored, hashToken(legacyKey))
 	}
 
 	user, err := d.GetUserByAPIKey(legacyKey)

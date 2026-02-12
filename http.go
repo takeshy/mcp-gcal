@@ -60,6 +60,16 @@ func (h *HTTPServer) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /auth/login", h.handleAuthLogin)
 	mux.HandleFunc("GET /auth/callback", h.handleAuthCallback)
 
+	// OAuth discovery (RFC 8414 + RFC 9728)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", h.handleOAuthMetadata)
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource", h.handleProtectedResourceMetadata)
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{path...}", h.handleProtectedResourceMetadata)
+
+	// OAuth Authorization Server
+	mux.HandleFunc("POST /oauth/register", h.handleOAuthRegister)
+	mux.HandleFunc("GET /oauth/authorize", h.handleOAuthAuthorize)
+	mux.HandleFunc("POST /oauth/token", h.handleOAuthToken)
+
 	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -104,8 +114,19 @@ func (h *HTTPServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthCallback handles the OAuth callback, creates/updates the user, and shows the API key.
 func (h *HTTPServer) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	// Verify state
 	state := r.URL.Query().Get("state")
+
+	// Check if this is an MCP OAuth flow
+	session, err := h.database.GetAuthSessionByState(state)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ERROR] GetAuthSessionByState: %v\n", err)
+	}
+	if session != nil {
+		h.handleMCPAuthCallback(w, r, session)
+		return
+	}
+
+	// Legacy flow (pendingStates sync.Map)
 	if _, ok := h.pendingStates.LoadAndDelete(state); !ok {
 		http.Error(w, "invalid state parameter", http.StatusBadRequest)
 		return
@@ -178,24 +199,38 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 60
 }
 
 // handleMCP handles MCP JSON-RPC requests with per-user authentication.
+// Supports both MCP OAuth tokens and legacy API key Bearer tokens.
 func (h *HTTPServer) handleMCP(w http.ResponseWriter, r *http.Request) {
-	// Authenticate via Bearer token
-	apiKey := extractBearerToken(r)
-	if apiKey == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid Authorization header; use Bearer <api_key>"})
+	token := extractBearerToken(r)
+	if token == "" {
+		setWWWAuthenticate(w, h.baseURL)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing Authorization header"})
 		return
 	}
 
-	user, err := h.database.GetUserByAPIKey(apiKey)
+	// 1. Try MCP OAuth token
+	userEmail, err := h.database.ValidateMCPAccessToken(token)
+	if err == nil && userEmail != "" {
+		h.handleMCPRequest(w, r, userEmail)
+		return
+	}
+
+	// 2. Fallback to legacy API key
+	user, err := h.database.GetUserByAPIKey(token)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
 		return
 	}
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key; authenticate via /auth/login"})
+		setWWWAuthenticate(w, h.baseURL)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
+	h.handleMCPRequest(w, r, user.Email)
+}
 
+// handleMCPRequest processes a JSON-RPC request for an authenticated user identified by email.
+func (h *HTTPServer) handleMCPRequest(w http.ResponseWriter, r *http.Request, userEmail string) {
 	// Parse JSON-RPC request
 	var req jsonrpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -221,7 +256,7 @@ func (h *HTTPServer) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		resp = h.handleToolsList(req.ID)
 	case "tools/call":
-		resp = h.handleToolsCall(r.Context(), req.ID, req.Params, apiKey)
+		resp = h.handleToolsCall(r.Context(), req.ID, req.Params, userEmail)
 	case "resources/list":
 		resp = h.handleResourcesList(req.ID)
 	case "resources/read":
@@ -267,14 +302,14 @@ func (h *HTTPServer) handleToolsList(id json.RawMessage) *jsonrpcResponse {
 	return successResponse(id, &listToolsResult{Tools: tools})
 }
 
-func (h *HTTPServer) handleToolsCall(ctx context.Context, id json.RawMessage, rawParams json.RawMessage, apiKey string) *jsonrpcResponse {
+func (h *HTTPServer) handleToolsCall(ctx context.Context, id json.RawMessage, rawParams json.RawMessage, userEmail string) *jsonrpcResponse {
 	var params callToolParams
 	if err := json.Unmarshal(rawParams, &params); err != nil {
 		return errorResponse(id, codeInvalidParams, "Invalid params", err.Error())
 	}
 
 	// Build service for this user
-	ts, _, err := getUserTokenSource(h.oauthConfig, h.database, apiKey)
+	ts, err := getUserTokenSourceByEmail(h.oauthConfig, h.database, userEmail)
 	if err != nil {
 		return successResponse(id, &callToolResult{
 			Content: []content{{Type: "text", Text: fmt.Sprintf("authentication error: %v", err)}},

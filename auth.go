@@ -158,33 +158,31 @@ func getTokenSource(config *oauth2.Config, database *DB) (oauth2.TokenSource, er
 	return ts, nil
 }
 
-// getUserTokenSource loads a per-user token and returns a refreshing TokenSource.
-func getUserTokenSource(config *oauth2.Config, database *DB, apiKey string) (oauth2.TokenSource, string, error) {
-	user, err := database.GetUserByAPIKey(apiKey)
+// getUserTokenSourceByEmail loads a per-user token by email and returns a refreshing TokenSource.
+func getUserTokenSourceByEmail(config *oauth2.Config, database *DB, email string) (oauth2.TokenSource, error) {
+	user, err := database.GetUserByEmail(email)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if user == nil {
-		return nil, "", fmt.Errorf("invalid API key")
+		return nil, fmt.Errorf("user not found: %s", email)
 	}
 
 	var tok oauth2.Token
 	if err := json.Unmarshal([]byte(user.TokenJSON), &tok); err != nil {
-		return nil, "", fmt.Errorf("unmarshal user token: %w", err)
+		return nil, fmt.Errorf("unmarshal token: %w", err)
 	}
 
 	ts := config.TokenSource(context.Background(), &tok)
 	newTok, err := ts.Token()
 	if err != nil {
-		return nil, "", fmt.Errorf("token expired; user must re-authenticate via /auth/login: %w", err)
+		return nil, fmt.Errorf("token expired; user must re-authenticate: %w", err)
 	}
 
-	// Persist refreshed token
 	if newTok.AccessToken != tok.AccessToken {
-		_ = database.UpdateUserToken(user.Email, newTok)
+		_ = database.UpdateUserToken(email, newTok)
 	}
-
-	return ts, user.Email, nil
+	return ts, nil
 }
 
 // userInfoResponse represents the Google userinfo API response.
