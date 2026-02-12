@@ -273,7 +273,7 @@ func (h *HTTPServer) handleToolsCall(ctx context.Context, id json.RawMessage, ra
 		return errorResponse(id, codeInvalidParams, "Invalid params", err.Error())
 	}
 
-	// Build a CalendarService for this user
+	// Build service for this user
 	ts, _, err := getUserTokenSource(h.oauthConfig, h.database, apiKey)
 	if err != nil {
 		return successResponse(id, &callToolResult{
@@ -282,15 +282,7 @@ func (h *HTTPServer) handleToolsCall(ctx context.Context, id json.RawMessage, ra
 		})
 	}
 
-	svc, err := NewCalendarService(ctx, ts)
-	if err != nil {
-		return successResponse(id, &callToolResult{
-			Content: []content{{Type: "text", Text: fmt.Sprintf("calendar service error: %v", err)}},
-			IsError: true,
-		})
-	}
-
-	result, err := dispatchCalendarTool(svc, params.Name, params.Arguments)
+	result, err := dispatchHTTPTool(ctx, ts, params.Name, params.Arguments)
 	if err != nil {
 		return successResponse(id, &callToolResult{
 			Content: []content{{Type: "text", Text: err.Error()}},

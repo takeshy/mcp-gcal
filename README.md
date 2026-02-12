@@ -1,9 +1,11 @@
 # mcp-gcal
 
-A standalone MCP (Model Context Protocol) server for Google Calendar. Supports two modes:
+A standalone MCP (Model Context Protocol) server for Google Calendar and Gmail. Supports two modes:
 
 - **Stdio mode** (single-user): Direct MCP client integration via JSON-RPC over stdin/stdout
 - **HTTP mode** (multi-user): HTTP server with per-user Google OAuth authentication
+
+[日本語版 README](README_ja.md)
 
 ## Setup
 
@@ -11,7 +13,7 @@ A standalone MCP (Model Context Protocol) server for Google Calendar. Supports t
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project (or use an existing one)
-3. Enable the **Google Calendar API**
+3. Enable the **Google Calendar API** and **Gmail API**
 4. Go to **Credentials** → **Create Credentials** → **OAuth 2.0 Client IDs**
 5. Choose **Desktop app** (stdio) or **Web application** (HTTP) as the type
 6. For HTTP mode, add your callback URI (default: `http://localhost:8080/auth/callback`) as an authorized redirect URI
@@ -71,7 +73,7 @@ Reads JSON-RPC 2.0 from stdin, writes to stdout. The `authenticate` tool is also
 ### Authentication Flow
 
 1. User visits `http://localhost:8080/auth/login`
-2. Redirected to Google OAuth consent screen (with `calendar` + `userinfo.email` scopes)
+2. Redirected to Google OAuth consent screen (with `calendar` + `gmail.modify` + `userinfo.email` scopes)
 3. After authorization, redirected to `/auth/callback`
 4. Server identifies user by Google email, stores token in SQLite
 5. User receives an API key (displayed on the callback page)
@@ -109,6 +111,8 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Tools
 
+### Calendar Tools
+
 | Tool | Description | Required Parameters |
 |---|---|---|
 | `authenticate` | Start Google OAuth2 login (stdio only) | (none) |
@@ -120,18 +124,36 @@ curl -X POST http://localhost:8080/mcp \
 | `update-event` | Update an existing event | `event_id` |
 | `delete-event` | Delete an event | `event_id` |
 | `respond-to-event` | Respond to an invitation | `event_id`, `response` |
+| `show-calendar` | Interactive calendar UI (MCP Apps) | (none) |
+
+### Gmail Tools
+
+| Tool | Description | Required Parameters |
+|---|---|---|
+| `search-emails` | Search emails using Gmail query syntax | `query` |
+| `read-email` | Read full content of an email | `message_id` |
+| `send-email` | Send an email | `to`, `subject`, `body` |
+| `draft-email` | Create a draft email | `to`, `subject`, `body` |
+| `modify-email` | Add or remove labels on an email | `message_id` |
+| `delete-email` | Move an email to trash | `message_id` |
+| `list-email-labels` | List all Gmail labels | (none) |
+
+### MCP Apps UI
+
+The `show-calendar` tool supports [MCP Apps](https://github.com/anthropics/mcp-apps) UI. When used with a compatible MCP client, it renders an interactive calendar view with the ability to browse, add, and delete events.
 
 ## Architecture
 
 ```
 Stdio Mode (single-user):
   stdin (JSON-RPC) → Server → Tool Dispatch → Google Calendar API
+                                             → Gmail API
                        ↓
                     SQLite (oauth_tokens table)
 
 HTTP Mode (multi-user):
   Browser → /auth/login → Google OAuth → /auth/callback → Save user + token
-  Client  → POST /mcp (Bearer token) → Auth middleware → Per-user Calendar API
+  Client  → POST /mcp (Bearer token) → Auth middleware → Per-user Calendar/Gmail API
                                            ↓
                                         SQLite (users table)
 ```
@@ -144,4 +166,7 @@ HTTP Mode (multi-user):
 - **tools.go** - Tool definitions, shared dispatch logic
 - **auth.go** - OAuth2 flow, token management
 - **calendar.go** - Google Calendar API operations
+- **gmail.go** - Gmail API operations
+- **ui.go** - MCP Apps UI resource handling
 - **db.go** - SQLite storage (single-user tokens + multi-user table)
+- **templates/calendar.html** - Interactive calendar UI template

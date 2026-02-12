@@ -154,6 +154,7 @@ type Server struct {
 	database        *DB
 	oauthConfig     *oauthConfigHolder
 	calendarService *CalendarService
+	gmailService    *GmailService
 	initialized     bool
 	reader          *bufio.Reader
 	writer          io.Writer
@@ -386,6 +387,31 @@ func (s *Server) ensureCalendarService(ctx context.Context) (*CalendarService, e
 	}
 
 	s.calendarService = svc
+	return svc, nil
+}
+
+// ensureGmailService lazily initializes the GmailService.
+func (s *Server) ensureGmailService(ctx context.Context) (*GmailService, error) {
+	if s.gmailService != nil {
+		return s.gmailService, nil
+	}
+
+	config, err := loadOAuthConfig(s.oauthConfig.credentialsFile, oauthScopes)
+	if err != nil {
+		return nil, err
+	}
+
+	ts, err := getTokenSource(config, s.database)
+	if err != nil {
+		return nil, err
+	}
+
+	svc, err := NewGmailService(ctx, ts)
+	if err != nil {
+		return nil, err
+	}
+
+	s.gmailService = svc
 	return svc, nil
 }
 

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+
+	"golang.org/x/oauth2"
 )
 
 // allTools returns all MCP tool definitions with input schemas.
@@ -10,7 +12,7 @@ func allTools() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "authenticate",
-			Description: "Authenticate with Google Calendar via OAuth2. Opens a browser for Google login. Must be called before using other tools if not already authenticated.",
+			Description: "Authenticate with Google Calendar and Gmail via OAuth2. Opens a browser for Google login. Must be called before using other tools if not already authenticated.",
 			InputSchema: inputSchema{
 				Type:       "object",
 				Properties: map[string]property{},
@@ -205,6 +207,94 @@ func allTools() []mcpTool {
 			},
 			visibility: []string{"app"},
 		},
+		// Gmail tools
+		{
+			Name:        "search-emails",
+			Description: "Search emails using Gmail query syntax (e.g., 'from:user@example.com', 'subject:hello', 'is:unread', 'newer_than:1d').",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"query":       {Type: "string", Description: "Gmail search query (required)"},
+					"max_results": {Type: "number", Description: "Maximum number of results (default: 20)"},
+				},
+				Required: []string{"query"},
+			},
+		},
+		{
+			Name:        "read-email",
+			Description: "Read the full content of an email by its message ID.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"message_id": {Type: "string", Description: "Email message ID (required)"},
+				},
+				Required: []string{"message_id"},
+			},
+		},
+		{
+			Name:        "send-email",
+			Description: "Send an email.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"to":          {Type: "string", Description: "Recipient email address (required)"},
+					"subject":     {Type: "string", Description: "Email subject (required)"},
+					"body":        {Type: "string", Description: "Email body in plain text (required)"},
+					"cc":          {Type: "string", Description: "CC recipients (comma-separated)"},
+					"bcc":         {Type: "string", Description: "BCC recipients (comma-separated)"},
+					"thread_id":   {Type: "string", Description: "Thread ID for replying to a thread"},
+					"in_reply_to": {Type: "string", Description: "Message-ID header of the email being replied to"},
+				},
+				Required: []string{"to", "subject", "body"},
+			},
+		},
+		{
+			Name:        "draft-email",
+			Description: "Create a draft email without sending it.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"to":      {Type: "string", Description: "Recipient email address (required)"},
+					"subject": {Type: "string", Description: "Email subject (required)"},
+					"body":    {Type: "string", Description: "Email body in plain text (required)"},
+					"cc":      {Type: "string", Description: "CC recipients (comma-separated)"},
+					"bcc":     {Type: "string", Description: "BCC recipients (comma-separated)"},
+				},
+				Required: []string{"to", "subject", "body"},
+			},
+		},
+		{
+			Name:        "modify-email",
+			Description: "Add or remove labels on an email.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"message_id":    {Type: "string", Description: "Email message ID (required)"},
+					"add_labels":    {Type: "string", Description: "Label IDs to add (comma-separated, e.g., 'STARRED,IMPORTANT')"},
+					"remove_labels": {Type: "string", Description: "Label IDs to remove (comma-separated, e.g., 'UNREAD,INBOX')"},
+				},
+				Required: []string{"message_id"},
+			},
+		},
+		{
+			Name:        "delete-email",
+			Description: "Delete an email (move to trash).",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"message_id": {Type: "string", Description: "Email message ID (required)"},
+				},
+				Required: []string{"message_id"},
+			},
+		},
+		{
+			Name:        "list-email-labels",
+			Description: "List all Gmail labels (system and user-created).",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
 	}
 }
 
@@ -344,11 +434,100 @@ func dispatchCalendarTool(svc *CalendarService, name string, args map[string]int
 	}
 }
 
+// isGmailTool returns true if the tool name is a Gmail tool.
+func isGmailTool(name string) bool {
+	switch name {
+	case "search-emails", "read-email", "send-email", "draft-email",
+		"modify-email", "delete-email", "list-email-labels":
+		return true
+	}
+	return false
+}
+
+// dispatchGmailTool routes a Gmail tool call to the appropriate GmailService method.
+func dispatchGmailTool(svc *GmailService, name string, args map[string]interface{}) (any, error) {
+	switch name {
+	case "search-emails":
+		return svc.SearchEmails(
+			argString(args, "query"),
+			int64(argFloat(args, "max_results")),
+		)
+
+	case "read-email":
+		return svc.ReadEmail(argString(args, "message_id"))
+
+	case "send-email":
+		return svc.SendEmail(
+			argString(args, "to"),
+			argString(args, "subject"),
+			argString(args, "body"),
+			argString(args, "cc"),
+			argString(args, "bcc"),
+			argString(args, "thread_id"),
+			argString(args, "in_reply_to"),
+		)
+
+	case "draft-email":
+		return svc.DraftEmail(
+			argString(args, "to"),
+			argString(args, "subject"),
+			argString(args, "body"),
+			argString(args, "cc"),
+			argString(args, "bcc"),
+		)
+
+	case "modify-email":
+		return svc.ModifyEmail(
+			argString(args, "message_id"),
+			argString(args, "add_labels"),
+			argString(args, "remove_labels"),
+		)
+
+	case "delete-email":
+		err := svc.DeleteEmail(argString(args, "message_id"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "trashed", "message_id": argString(args, "message_id")}, nil
+
+	case "list-email-labels":
+		return svc.ListLabels()
+
+	default:
+		return nil, fmt.Errorf("unknown gmail tool: %s", name)
+	}
+}
+
+// dispatchHTTPTool routes a tool call for the HTTP server (multi-user).
+// It creates the appropriate service from the token source.
+func dispatchHTTPTool(ctx context.Context, ts oauth2.TokenSource, name string, args map[string]interface{}) (any, error) {
+	if isGmailTool(name) {
+		svc, err := NewGmailService(ctx, ts)
+		if err != nil {
+			return nil, fmt.Errorf("gmail service error: %w", err)
+		}
+		return dispatchGmailTool(svc, name, args)
+	}
+	svc, err := NewCalendarService(ctx, ts)
+	if err != nil {
+		return nil, fmt.Errorf("calendar service error: %w", err)
+	}
+	return dispatchCalendarTool(svc, name, args)
+}
+
 // dispatchTool routes a tool call for the stdio server (single-user).
 func (s *Server) dispatchTool(ctx context.Context, name string, args map[string]interface{}) (any, error) {
-	// authenticate is special - doesn't need an existing calendar service
+	// authenticate is special - doesn't need an existing service
 	if name == "authenticate" {
 		return s.handleAuthenticate(ctx)
+	}
+
+	if isGmailTool(name) {
+		svc, err := s.ensureGmailService(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("gmail service unavailable: %w\nUse the 'authenticate' tool first.", err)
+		}
+		return dispatchGmailTool(svc, name, args)
 	}
 
 	svc, err := s.ensureCalendarService(ctx)
@@ -375,8 +554,9 @@ func (s *Server) handleAuthenticate(ctx context.Context) (any, error) {
 		return nil, fmt.Errorf("save token: %w", err)
 	}
 
-	// Reset cached service so next call uses new token
+	// Reset cached services so next call uses new token
 	s.calendarService = nil
+	s.gmailService = nil
 
 	return map[string]string{"status": "authenticated"}, nil
 }

@@ -15,15 +15,18 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/gmail/v1"
 )
 
 // OAuth scopes
 var oauthScopes = []string{
 	calendar.CalendarScope,
+	gmail.GmailModifyScope,
 }
 
 var oauthScopesWithEmail = []string{
 	calendar.CalendarScope,
+	gmail.GmailModifyScope,
 	"https://www.googleapis.com/auth/userinfo.email",
 }
 
