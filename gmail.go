@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"mime"
@@ -11,6 +12,13 @@ import (
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
 )
+
+// Attachment represents a file attachment for sending emails.
+type Attachment struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Data     string `json:"data"` // base64-encoded file content
+}
 
 // GmailService wraps the Google Gmail API.
 type GmailService struct {
@@ -145,8 +153,32 @@ func convertMessage(msg *gmail.Message) emailJSON {
 	return email
 }
 
-func buildRawEmail(to, subject, body, cc, bcc, inReplyTo string) string {
+// validateAttachments checks that attachment fields are valid for MIME construction.
+func validateAttachments(attachments []Attachment) error {
+	for i, att := range attachments {
+		if att.Filename == "" {
+			return fmt.Errorf("attachment[%d]: filename is required", i)
+		}
+		if att.MimeType == "" {
+			return fmt.Errorf("attachment[%d]: mime_type is required", i)
+		}
+		if strings.ContainsAny(att.MimeType, "\r\n") {
+			return fmt.Errorf("attachment[%d]: mime_type contains invalid characters", i)
+		}
+		if !strings.Contains(att.MimeType, "/") {
+			return fmt.Errorf("attachment[%d]: mime_type must be in type/subtype format (e.g. application/pdf)", i)
+		}
+		if att.Data == "" {
+			return fmt.Errorf("attachment[%d]: data is required", i)
+		}
+	}
+	return nil
+}
+
+func buildRawEmail(to, subject, body, cc, bcc, inReplyTo string, attachments []Attachment) string {
 	var buf strings.Builder
+
+	// Common headers
 	buf.WriteString(fmt.Sprintf("To: %s\r\n", to))
 	if cc != "" {
 		buf.WriteString(fmt.Sprintf("Cc: %s\r\n", cc))
@@ -159,10 +191,72 @@ func buildRawEmail(to, subject, body, cc, bcc, inReplyTo string) string {
 		buf.WriteString(fmt.Sprintf("In-Reply-To: %s\r\n", inReplyTo))
 		buf.WriteString(fmt.Sprintf("References: %s\r\n", inReplyTo))
 	}
+
+	if len(attachments) == 0 {
+		// Simple plain text email
+		buf.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+		buf.WriteString("\r\n")
+		buf.WriteString(body)
+		return base64.RawURLEncoding.EncodeToString([]byte(buf.String()))
+	}
+
+	// MIME multipart email with attachments
+	boundary := generateBoundary()
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	buf.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%q\r\n", boundary))
+	buf.WriteString("\r\n")
+
+	// Text body part
+	buf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	buf.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	buf.WriteString("\r\n")
 	buf.WriteString(body)
+	buf.WriteString("\r\n")
+
+	// Attachment parts
+	for _, att := range attachments {
+		buf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		buf.WriteString(fmt.Sprintf("Content-Type: %s; name=%q\r\n", att.MimeType, att.Filename))
+		buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=%q\r\n", att.Filename))
+		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+		buf.WriteString("\r\n")
+		buf.WriteString(wrapBase64Lines(att.Data))
+		buf.WriteString("\r\n")
+	}
+
+	// Closing boundary
+	buf.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+
 	return base64.RawURLEncoding.EncodeToString([]byte(buf.String()))
+}
+
+func generateBoundary() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("__mcp_gcal_%x", b)
+}
+
+// wrapBase64Lines strips whitespace from base64 data and inserts CRLF every 76 characters per MIME spec.
+func wrapBase64Lines(data string) string {
+	// Strip existing whitespace
+	var clean strings.Builder
+	for _, r := range data {
+		if r != ' ' && r != '\n' && r != '\r' && r != '\t' {
+			clean.WriteRune(r)
+		}
+	}
+	s := clean.String()
+
+	var buf strings.Builder
+	for i := 0; i < len(s); i += 76 {
+		end := i + 76
+		if end > len(s) {
+			end = len(s)
+		}
+		buf.WriteString(s[i:end])
+		buf.WriteString("\r\n")
+	}
+	return strings.TrimRight(buf.String(), "\r\n")
 }
 
 // Service methods
@@ -213,8 +307,8 @@ func (gs *GmailService) ReadEmail(messageID string) (*emailJSON, error) {
 }
 
 // SendEmail sends an email and returns the sent message metadata.
-func (gs *GmailService) SendEmail(to, subject, body, cc, bcc, threadID, inReplyTo string) (*emailJSON, error) {
-	raw := buildRawEmail(to, subject, body, cc, bcc, inReplyTo)
+func (gs *GmailService) SendEmail(to, subject, body, cc, bcc, threadID, inReplyTo string, attachments []Attachment) (*emailJSON, error) {
+	raw := buildRawEmail(to, subject, body, cc, bcc, inReplyTo, attachments)
 	msg := &gmail.Message{Raw: raw}
 	if threadID != "" {
 		msg.ThreadId = threadID
@@ -246,8 +340,8 @@ func (gs *GmailService) SendEmail(to, subject, body, cc, bcc, threadID, inReplyT
 }
 
 // DraftEmail creates a draft email without sending it.
-func (gs *GmailService) DraftEmail(to, subject, body, cc, bcc string) (any, error) {
-	raw := buildRawEmail(to, subject, body, cc, bcc, "")
+func (gs *GmailService) DraftEmail(to, subject, body, cc, bcc string, attachments []Attachment) (any, error) {
+	raw := buildRawEmail(to, subject, body, cc, bcc, "", attachments)
 	draft := &gmail.Draft{
 		Message: &gmail.Message{Raw: raw},
 	}

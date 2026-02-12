@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"golang.org/x/oauth2"
@@ -233,7 +234,7 @@ func allTools() []mcpTool {
 		},
 		{
 			Name:        "send-email",
-			Description: "Send an email.",
+			Description: "Send an email. Supports file attachments via base64-encoded data.",
 			InputSchema: inputSchema{
 				Type: "object",
 				Properties: map[string]property{
@@ -244,21 +245,23 @@ func allTools() []mcpTool {
 					"bcc":         {Type: "string", Description: "BCC recipients (comma-separated)"},
 					"thread_id":   {Type: "string", Description: "Thread ID for replying to a thread"},
 					"in_reply_to": {Type: "string", Description: "Message-ID header of the email being replied to"},
+					"attachments": {Type: "string", Description: `JSON array of attachments. Each object has: "filename" (string), "mime_type" (string, e.g. "application/pdf"), "data" (base64-encoded file content). Example: [{"filename":"doc.pdf","mime_type":"application/pdf","data":"base64..."}]`},
 				},
 				Required: []string{"to", "subject", "body"},
 			},
 		},
 		{
 			Name:        "draft-email",
-			Description: "Create a draft email without sending it.",
+			Description: "Create a draft email without sending it. Supports file attachments via base64-encoded data.",
 			InputSchema: inputSchema{
 				Type: "object",
 				Properties: map[string]property{
-					"to":      {Type: "string", Description: "Recipient email address (required)"},
-					"subject": {Type: "string", Description: "Email subject (required)"},
-					"body":    {Type: "string", Description: "Email body in plain text (required)"},
-					"cc":      {Type: "string", Description: "CC recipients (comma-separated)"},
-					"bcc":     {Type: "string", Description: "BCC recipients (comma-separated)"},
+					"to":          {Type: "string", Description: "Recipient email address (required)"},
+					"subject":     {Type: "string", Description: "Email subject (required)"},
+					"body":        {Type: "string", Description: "Email body in plain text (required)"},
+					"cc":          {Type: "string", Description: "CC recipients (comma-separated)"},
+					"bcc":         {Type: "string", Description: "BCC recipients (comma-separated)"},
+					"attachments": {Type: "string", Description: `JSON array of attachments. Each object has: "filename" (string), "mime_type" (string, e.g. "application/pdf"), "data" (base64-encoded file content). Example: [{"filename":"doc.pdf","mime_type":"application/pdf","data":"base64..."}]`},
 				},
 				Required: []string{"to", "subject", "body"},
 			},
@@ -355,6 +358,38 @@ func argBool(args map[string]interface{}, key string, defaultVal bool) bool {
 		}
 	}
 	return defaultVal
+}
+
+// argAttachments parses the attachments argument, accepting either a JSON string or a JSON array.
+func argAttachments(args map[string]interface{}, key string) ([]Attachment, error) {
+	v, ok := args[key]
+	if !ok {
+		return nil, nil
+	}
+
+	var jsonBytes []byte
+	switch val := v.(type) {
+	case string:
+		if val == "" {
+			return nil, nil
+		}
+		jsonBytes = []byte(val)
+	default:
+		var err error
+		jsonBytes, err = json.Marshal(val)
+		if err != nil {
+			return nil, fmt.Errorf("marshal attachments: %w", err)
+		}
+	}
+
+	var attachments []Attachment
+	if err := json.Unmarshal(jsonBytes, &attachments); err != nil {
+		return nil, fmt.Errorf("parse attachments: %w", err)
+	}
+	if err := validateAttachments(attachments); err != nil {
+		return nil, err
+	}
+	return attachments, nil
 }
 
 // dispatchCalendarTool routes a calendar tool call to the appropriate CalendarService method.
@@ -457,6 +492,10 @@ func dispatchGmailTool(svc *GmailService, name string, args map[string]interface
 		return svc.ReadEmail(argString(args, "message_id"))
 
 	case "send-email":
+		atts, err := argAttachments(args, "attachments")
+		if err != nil {
+			return nil, err
+		}
 		return svc.SendEmail(
 			argString(args, "to"),
 			argString(args, "subject"),
@@ -465,15 +504,21 @@ func dispatchGmailTool(svc *GmailService, name string, args map[string]interface
 			argString(args, "bcc"),
 			argString(args, "thread_id"),
 			argString(args, "in_reply_to"),
+			atts,
 		)
 
 	case "draft-email":
+		atts, err := argAttachments(args, "attachments")
+		if err != nil {
+			return nil, err
+		}
 		return svc.DraftEmail(
 			argString(args, "to"),
 			argString(args, "subject"),
 			argString(args, "body"),
 			argString(args, "cc"),
 			argString(args, "bcc"),
+			atts,
 		)
 
 	case "modify-email":

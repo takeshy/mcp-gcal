@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -197,5 +198,85 @@ func TestArgHelpers(t *testing.T) {
 	}
 	if _, ok := argOptionalString(args, "count"); ok {
 		t.Error("argOptionalString(count) ok = true, want false (wrong type)")
+	}
+}
+
+func TestArgAttachments_JSONString(t *testing.T) {
+	t.Parallel()
+
+	args := map[string]interface{}{
+		"attachments": `[{"filename":"doc.pdf","mime_type":"application/pdf","data":"AQID"}]`,
+	}
+
+	atts, err := argAttachments(args, "attachments")
+	if err != nil {
+		t.Fatalf("argAttachments error: %v", err)
+	}
+	if len(atts) != 1 {
+		t.Fatalf("got %d attachments, want 1", len(atts))
+	}
+	if atts[0].Filename != "doc.pdf" {
+		t.Errorf("filename = %q, want %q", atts[0].Filename, "doc.pdf")
+	}
+	if atts[0].MimeType != "application/pdf" {
+		t.Errorf("mime_type = %q, want %q", atts[0].MimeType, "application/pdf")
+	}
+	if atts[0].Data != "AQID" {
+		t.Errorf("data = %q, want %q", atts[0].Data, "AQID")
+	}
+}
+
+func TestArgAttachments_JSONArray(t *testing.T) {
+	t.Parallel()
+
+	// Simulate what JSON unmarshalling produces for a JSON array
+	var raw interface{}
+	_ = json.Unmarshal([]byte(`[{"filename":"img.png","mime_type":"image/png","data":"abc123"}]`), &raw)
+	args := map[string]interface{}{
+		"attachments": raw,
+	}
+
+	atts, err := argAttachments(args, "attachments")
+	if err != nil {
+		t.Fatalf("argAttachments error: %v", err)
+	}
+	if len(atts) != 1 {
+		t.Fatalf("got %d attachments, want 1", len(atts))
+	}
+	if atts[0].Filename != "img.png" {
+		t.Errorf("filename = %q, want %q", atts[0].Filename, "img.png")
+	}
+}
+
+func TestArgAttachments_Missing(t *testing.T) {
+	t.Parallel()
+
+	atts, err := argAttachments(map[string]interface{}{}, "attachments")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if atts != nil {
+		t.Fatalf("expected nil, got %v", atts)
+	}
+}
+
+func TestArgAttachments_EmptyString(t *testing.T) {
+	t.Parallel()
+
+	atts, err := argAttachments(map[string]interface{}{"attachments": ""}, "attachments")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if atts != nil {
+		t.Fatalf("expected nil, got %v", atts)
+	}
+}
+
+func TestArgAttachments_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := argAttachments(map[string]interface{}{"attachments": "not json"}, "attachments")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
@@ -343,10 +344,107 @@ func TestConvertMessage_HTMLFallback(t *testing.T) {
 	}
 }
 
+func TestValidateAttachments_Valid(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "doc.pdf", MimeType: "application/pdf", Data: "AQID"},
+		{Filename: "img.png", MimeType: "image/png", Data: "abc123"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_Nil(t *testing.T) {
+	t.Parallel()
+	if err := validateAttachments(nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_EmptyFilename(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "", MimeType: "application/pdf", Data: "AQID"},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty filename")
+	}
+	if !contains(err.Error(), "filename is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_EmptyMimeType(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "doc.pdf", MimeType: "", Data: "AQID"},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty mime_type")
+	}
+	if !contains(err.Error(), "mime_type is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_CRLFInMimeType(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "doc.pdf", MimeType: "application/pdf\r\nX-Injected: evil", Data: "AQID"},
+	})
+	if err == nil {
+		t.Fatal("expected error for CRLF in mime_type")
+	}
+	if !contains(err.Error(), "invalid characters") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_InvalidMimeTypeFormat(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "doc.pdf", MimeType: "not-a-mime-type", Data: "AQID"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid mime_type format")
+	}
+	if !contains(err.Error(), "type/subtype format") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_EmptyData(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "doc.pdf", MimeType: "application/pdf", Data: ""},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty data")
+	}
+	if !contains(err.Error(), "data is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAttachments_SecondItemInvalid(t *testing.T) {
+	t.Parallel()
+	err := validateAttachments([]Attachment{
+		{Filename: "ok.pdf", MimeType: "application/pdf", Data: "AQID"},
+		{Filename: "bad.txt", MimeType: "text", Data: "abc"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid second attachment")
+	}
+	if !contains(err.Error(), "attachment[1]") {
+		t.Fatalf("expected error to reference attachment[1]: %v", err)
+	}
+}
+
 func TestBuildRawEmail(t *testing.T) {
 	t.Parallel()
 
-	raw := buildRawEmail("to@example.com", "Test Subject", "Hello body", "", "", "")
+	raw := buildRawEmail("to@example.com", "Test Subject", "Hello body", "", "", "", nil)
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
 		t.Fatalf("decode raw email: %v", err)
@@ -369,12 +467,16 @@ func TestBuildRawEmail(t *testing.T) {
 	if contains(s, "Bcc:") {
 		t.Fatalf("unexpected Bcc header in: %s", s)
 	}
+	// No MIME-Version for simple email
+	if contains(s, "MIME-Version:") {
+		t.Fatalf("unexpected MIME-Version header for simple email in: %s", s)
+	}
 }
 
 func TestBuildRawEmail_WithCcBcc(t *testing.T) {
 	t.Parallel()
 
-	raw := buildRawEmail("to@example.com", "Subject", "Body", "cc@example.com", "bcc@example.com", "")
+	raw := buildRawEmail("to@example.com", "Subject", "Body", "cc@example.com", "bcc@example.com", "", nil)
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
 		t.Fatalf("decode raw email: %v", err)
@@ -392,7 +494,7 @@ func TestBuildRawEmail_WithCcBcc(t *testing.T) {
 func TestBuildRawEmail_WithInReplyTo(t *testing.T) {
 	t.Parallel()
 
-	raw := buildRawEmail("to@example.com", "Re: Subject", "Reply body", "", "", "<msg-id@example.com>")
+	raw := buildRawEmail("to@example.com", "Re: Subject", "Reply body", "", "", "<msg-id@example.com>", nil)
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
 		t.Fatalf("decode raw email: %v", err)
@@ -410,7 +512,7 @@ func TestBuildRawEmail_WithInReplyTo(t *testing.T) {
 func TestBuildRawEmail_UTF8Subject(t *testing.T) {
 	t.Parallel()
 
-	raw := buildRawEmail("to@example.com", "日本語の件名", "本文", "", "", "")
+	raw := buildRawEmail("to@example.com", "日本語の件名", "本文", "", "", "", nil)
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
 		t.Fatalf("decode raw email: %v", err)
@@ -424,6 +526,141 @@ func TestBuildRawEmail_UTF8Subject(t *testing.T) {
 	if !contains(s, "Subject: =?utf-8?") {
 		t.Fatalf("missing Q-encoded subject in: %s", s)
 	}
+}
+
+func TestBuildRawEmail_WithAttachments(t *testing.T) {
+	t.Parallel()
+
+	fileData := base64.StdEncoding.EncodeToString([]byte("PDF file content"))
+	attachments := []Attachment{
+		{
+			Filename: "report.pdf",
+			MimeType: "application/pdf",
+			Data:     fileData,
+		},
+	}
+
+	raw := buildRawEmail("to@example.com", "With Attachment", "See attached.", "", "", "", attachments)
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("decode raw email: %v", err)
+	}
+	s := string(decoded)
+
+	if !contains(s, "MIME-Version: 1.0\r\n") {
+		t.Fatalf("missing MIME-Version in: %s", s)
+	}
+	if !contains(s, "Content-Type: multipart/mixed; boundary=") {
+		t.Fatalf("missing multipart Content-Type in: %s", s)
+	}
+	if !contains(s, "Content-Type: text/plain; charset=UTF-8\r\n") {
+		t.Fatalf("missing text part Content-Type in: %s", s)
+	}
+	if !contains(s, "See attached.") {
+		t.Fatalf("missing body text in: %s", s)
+	}
+	if !contains(s, `Content-Type: application/pdf; name="report.pdf"`) {
+		t.Fatalf("missing attachment Content-Type in: %s", s)
+	}
+	if !contains(s, `Content-Disposition: attachment; filename="report.pdf"`) {
+		t.Fatalf("missing Content-Disposition in: %s", s)
+	}
+	if !contains(s, "Content-Transfer-Encoding: base64\r\n") {
+		t.Fatalf("missing Content-Transfer-Encoding in: %s", s)
+	}
+	if !contains(s, fileData) {
+		t.Fatalf("missing attachment data in: %s", s)
+	}
+}
+
+func TestBuildRawEmail_MultipleAttachments(t *testing.T) {
+	t.Parallel()
+
+	attachments := []Attachment{
+		{
+			Filename: "doc.pdf",
+			MimeType: "application/pdf",
+			Data:     base64.StdEncoding.EncodeToString([]byte("pdf")),
+		},
+		{
+			Filename: "image.png",
+			MimeType: "image/png",
+			Data:     base64.StdEncoding.EncodeToString([]byte("png")),
+		},
+	}
+
+	raw := buildRawEmail("to@example.com", "Multi", "Body", "", "", "", attachments)
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("decode raw email: %v", err)
+	}
+	s := string(decoded)
+
+	if !contains(s, `filename="doc.pdf"`) {
+		t.Fatalf("missing first attachment in: %s", s)
+	}
+	if !contains(s, `filename="image.png"`) {
+		t.Fatalf("missing second attachment in: %s", s)
+	}
+}
+
+func TestBuildRawEmail_EmptyAttachments(t *testing.T) {
+	t.Parallel()
+
+	// Empty slice should produce simple email (no MIME multipart)
+	raw := buildRawEmail("to@example.com", "Simple", "Body", "", "", "", []Attachment{})
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("decode raw email: %v", err)
+	}
+	s := string(decoded)
+
+	if contains(s, "MIME-Version:") {
+		t.Fatalf("unexpected MIME-Version for empty attachments in: %s", s)
+	}
+	if contains(s, "multipart/mixed") {
+		t.Fatalf("unexpected multipart for empty attachments in: %s", s)
+	}
+}
+
+func TestWrapBase64Lines(t *testing.T) {
+	t.Parallel()
+
+	// Short data - no wrapping needed
+	short := "SGVsbG8="
+	result := wrapBase64Lines(short)
+	if result != short {
+		t.Fatalf("wrapBase64Lines(%q) = %q, want %q", short, result, short)
+	}
+
+	// Data longer than 76 chars should be wrapped
+	long := ""
+	for i := 0; i < 100; i++ {
+		long += "A"
+	}
+	result = wrapBase64Lines(long)
+	lines := splitLines(result)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
+	}
+	if len(lines[0]) != 76 {
+		t.Fatalf("first line length = %d, want 76", len(lines[0]))
+	}
+	if len(lines[1]) != 24 {
+		t.Fatalf("second line length = %d, want 24", len(lines[1]))
+	}
+}
+
+// splitLines splits on CRLF, filtering empty trailing entries.
+func splitLines(s string) []string {
+	parts := strings.Split(s, "\r\n")
+	var result []string
+	for _, p := range parts {
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func contains(s, substr string) bool {
