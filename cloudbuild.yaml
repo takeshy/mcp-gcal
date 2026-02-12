@@ -14,6 +14,17 @@ steps:
       - '--all-tags'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/mcp-gcal'
 
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE}'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/mcp-gcal:${SHORT_SHA}'
+      - '--region'
+      - '${_REGION}'
+
 images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/mcp-gcal'
 
@@ -23,3 +34,4 @@ options:
 substitutions:
   _REGION: asia-northeast1
   _REPO: mcp-gcal
+  _SERVICE: mcp-gcal
