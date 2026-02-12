@@ -142,6 +142,87 @@ curl -X POST http://localhost:8080/mcp \
 
 `show-calendar` ツールは [MCP Apps](https://github.com/anthropics/mcp-apps) UI に対応しています。対応する MCP クライアントで使用すると、イベントの閲覧・追加・削除が可能なインタラクティブカレンダーが表示されます。
 
+## デプロイ (GCP)
+
+Google Cloud Run に HTTPS ロードバランサー付きでデプロイし、CI/CD で自動デプロイを構成できます。
+
+### 前提条件
+
+- [Terraform](https://www.terraform.io/) インストール済み
+- `gcloud` CLI 認証済み
+- OAuth 認証情報 JSON ファイル (ウェブアプリケーション タイプ)
+
+### 初期セットアップ
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# terraform.tfvars をプロジェクト設定に合わせて編集
+cp /path/to/your/credentials.json credentials.json
+
+terraform init
+terraform apply
+```
+
+初回の Docker イメージをビルド・プッシュ:
+
+```bash
+cd ..
+gcloud builds submit \
+  --tag=asia-northeast1-docker.pkg.dev/YOUR_PROJECT_ID/mcp-gcal/mcp-gcal:latest \
+  --project=YOUR_PROJECT_ID
+```
+
+その後、再度 apply して Cloud Run サービスを作成:
+
+```bash
+cd terraform
+terraform apply
+```
+
+### CI/CD
+
+Cloud Build トリガーにより、`main` への push で自動ビルド・デプロイが実行されます:
+
+1. `SHORT_SHA` + `latest` タグで Docker イメージをビルド
+2. Artifact Registry にプッシュ
+3. Cloud Run に新リビジョンをデプロイ
+
+GitHub リポジトリを Cloud Build に接続してトリガーを設定:
+
+```bash
+# GitHub 接続を作成 (ブラウザでの OAuth 認可が必要)
+gcloud builds connections create github CONNECTION_NAME \
+  --region=asia-northeast1 --project=YOUR_PROJECT_ID
+
+# リポジトリをリンク
+gcloud builds repositories create mcp-gcal \
+  --connection=CONNECTION_NAME \
+  --remote-uri=https://github.com/OWNER/mcp-gcal.git \
+  --region=asia-northeast1 --project=YOUR_PROJECT_ID
+
+# トリガーを作成
+gcloud builds triggers create github \
+  --name=mcp-gcal-deploy \
+  --repository=projects/YOUR_PROJECT_ID/locations/asia-northeast1/connections/CONNECTION_NAME/repositories/mcp-gcal \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.yaml \
+  --region=asia-northeast1 \
+  --project=YOUR_PROJECT_ID \
+  --service-account=projects/YOUR_PROJECT_ID/serviceAccounts/YOUR_BUILD_SA
+```
+
+### インフラ構成
+
+| リソース | 説明 |
+|---|---|
+| Cloud Run | アプリケーションサーバー (SQLite のため最大1インスタンス) |
+| Artifact Registry | Docker イメージリポジトリ |
+| Secret Manager | OAuth 認証情報の保管 |
+| グローバル HTTPS LB | Google マネージド SSL 証明書付きロードバランサー |
+| Cloud DNS | カスタムドメインの A レコード |
+| Cloud Build | CI/CD パイプライン |
+
 ## アーキテクチャ
 
 ```
@@ -156,6 +237,10 @@ HTTP モード (マルチユーザー):
   クライアント → POST /mcp (Bearer トークン) → 認証ミドルウェア → ユーザーごとの Calendar/Gmail API
                                                   ↓
                                                SQLite (users テーブル)
+
+GCP デプロイ:
+  GitHub push → Cloud Build → Artifact Registry → Cloud Run
+  クライアント → Cloud DNS → HTTPS LB (Google マネージド SSL) → Cloud Run
 ```
 
 ### ファイル構成
@@ -170,3 +255,6 @@ HTTP モード (マルチユーザー):
 - **ui.go** - MCP Apps UI リソース処理
 - **db.go** - SQLite ストレージ (シングルユーザートークン + マルチユーザーテーブル)
 - **templates/calendar.html** - インタラクティブカレンダー UI テンプレート
+- **Dockerfile** - マルチステージ Docker ビルド
+- **cloudbuild.yaml** - Cloud Build パイプライン (ビルド、プッシュ、デプロイ)
+- **terraform/** - GCP インフラのコード管理

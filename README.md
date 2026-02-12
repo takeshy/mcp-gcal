@@ -142,6 +142,87 @@ curl -X POST http://localhost:8080/mcp \
 
 The `show-calendar` tool supports [MCP Apps](https://github.com/anthropics/mcp-apps) UI. When used with a compatible MCP client, it renders an interactive calendar view with the ability to browse, add, and delete events.
 
+## Deployment (GCP)
+
+Deploy to Google Cloud Run with HTTPS load balancer and automatic CI/CD.
+
+### Prerequisites
+
+- [Terraform](https://www.terraform.io/) installed
+- `gcloud` CLI authenticated
+- OAuth credentials JSON file (Web application type)
+
+### Initial Setup
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your project settings
+cp /path/to/your/credentials.json credentials.json
+
+terraform init
+terraform apply
+```
+
+Build and push the initial Docker image:
+
+```bash
+cd ..
+gcloud builds submit \
+  --tag=asia-northeast1-docker.pkg.dev/YOUR_PROJECT_ID/mcp-gcal/mcp-gcal:latest \
+  --project=YOUR_PROJECT_ID
+```
+
+Then apply again to create the Cloud Run service:
+
+```bash
+cd terraform
+terraform apply
+```
+
+### CI/CD
+
+A Cloud Build trigger is configured to automatically build and deploy on every push to `main`:
+
+1. Builds Docker image with `SHORT_SHA` and `latest` tags
+2. Pushes to Artifact Registry
+3. Deploys new revision to Cloud Run
+
+Set up the trigger by connecting your GitHub repository via Cloud Build:
+
+```bash
+# Create GitHub connection (requires browser OAuth)
+gcloud builds connections create github CONNECTION_NAME \
+  --region=asia-northeast1 --project=YOUR_PROJECT_ID
+
+# Link repository
+gcloud builds repositories create mcp-gcal \
+  --connection=CONNECTION_NAME \
+  --remote-uri=https://github.com/OWNER/mcp-gcal.git \
+  --region=asia-northeast1 --project=YOUR_PROJECT_ID
+
+# Create trigger
+gcloud builds triggers create github \
+  --name=mcp-gcal-deploy \
+  --repository=projects/YOUR_PROJECT_ID/locations/asia-northeast1/connections/CONNECTION_NAME/repositories/mcp-gcal \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.yaml \
+  --region=asia-northeast1 \
+  --project=YOUR_PROJECT_ID \
+  --service-account=projects/YOUR_PROJECT_ID/serviceAccounts/YOUR_BUILD_SA
+```
+
+### Infrastructure
+
+| Resource | Description |
+|---|---|
+| Cloud Run | Application server (max 1 instance for SQLite) |
+| Artifact Registry | Docker image repository |
+| Secret Manager | OAuth credentials storage |
+| Global HTTPS LB | Load balancer with Google-managed SSL certificate |
+| Cloud DNS | A record for custom domain |
+| Cloud Build | CI/CD pipeline |
+
 ## Architecture
 
 ```
@@ -156,6 +237,10 @@ HTTP Mode (multi-user):
   Client  → POST /mcp (Bearer token) → Auth middleware → Per-user Calendar/Gmail API
                                            ↓
                                         SQLite (users table)
+
+GCP Deployment:
+  GitHub push → Cloud Build → Artifact Registry → Cloud Run
+  Client → Cloud DNS → HTTPS LB (Google-managed SSL) → Cloud Run
 ```
 
 ### Files
@@ -170,3 +255,6 @@ HTTP Mode (multi-user):
 - **ui.go** - MCP Apps UI resource handling
 - **db.go** - SQLite storage (single-user tokens + multi-user table)
 - **templates/calendar.html** - Interactive calendar UI template
+- **Dockerfile** - Multi-stage Docker build
+- **cloudbuild.yaml** - Cloud Build pipeline (build, push, deploy)
+- **terraform/** - GCP infrastructure as code
